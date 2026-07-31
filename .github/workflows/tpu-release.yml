@@ -1,4 +1,4 @@
-name: Test GCP Authentication
+name: Create GKE Cluster
 
 on:
   workflow_dispatch:
@@ -7,8 +7,13 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+  ZONE: ${{ vars.GKE_ZONE }}
+
 jobs:
-  test-authentication:
+  create-gke-cluster:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,23 +23,76 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
+          project_id: ${{ env.PROJECT_ID }}
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Google Cloud CLI
         uses: google-github-actions/setup-gcloud@v3
         with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
+          project_id: ${{ env.PROJECT_ID }}
 
-      - name: Verify authentication
+      - name: Enable required APIs
         run: |
-          echo "Active account:"
-          gcloud auth list
+          gcloud services enable \
+            container.googleapis.com \
+            compute.googleapis.com \
+            file.googleapis.com \
+            --project="${PROJECT_ID}"
 
-          echo "Active project:"
-          gcloud config get-value project
+      - name: Check if GKE cluster exists
+        id: cluster-check
+        run: |
+          if gcloud container clusters describe "${CLUSTER_NAME}" \
+            --zone="${ZONE}" \
+            --project="${PROJECT_ID}" >/dev/null 2>&1; then
 
-          echo "Project details:"
-          gcloud projects describe "${{ vars.GCP_PROJECT_ID }}" \
-            --format="value(projectId,projectNumber)"
+            echo "Cluster ${CLUSTER_NAME} already exists."
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Cluster ${CLUSTER_NAME} does not exist."
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Create GKE cluster
+        if: steps.cluster-check.outputs.exists == 'false'
+        run: |
+          gcloud container clusters create "${CLUSTER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --zone="${ZONE}" \
+            --machine-type="e2-standard-4" \
+            --num-nodes="1" \
+            --addons="GcpFilestoreCsiDriver"
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials "${CLUSTER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --zone="${ZONE}"
+
+      - name: Verify cluster
+        run: |
+          echo "===== GKE CLUSTER ====="
+
+          gcloud container clusters describe "${CLUSTER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --zone="${ZONE}" \
+            --format="table(name,status,currentMasterVersion,location)"
+
+          echo "===== KUBERNETES NODES ====="
+
+          kubectl get nodes -o wide
+
+      - name: Add workflow summary
+        run: |
+          {
+            echo "# GKE Cluster Creation"
+            echo
+            echo "✅ Authentication completed"
+            echo
+            echo "✅ Cluster created or already available"
+            echo
+            echo "- Project: ${PROJECT_ID}"
+            echo "- Cluster: ${CLUSTER_NAME}"
+            echo "- Zone: ${ZONE}"
+          } >> "${GITHUB_STEP_SUMMARY}"
