@@ -1,4 +1,4 @@
-name: Create GKE Cluster
+name: Create GKE Cluster and TPU Pool
 
 on:
   workflow_dispatch:
@@ -11,9 +11,10 @@ env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
   ZONE: ${{ vars.GKE_ZONE }}
+  TPU_POOL_NAME: ${{ vars.TPU_POOL_NAME }}
 
 jobs:
-  create-gke-cluster:
+  create-gke-and-tpu:
     runs-on: ubuntu-latest
 
     steps:
@@ -81,6 +82,37 @@ jobs:
           cluster_name: ${{ env.CLUSTER_NAME }}
           location: ${{ env.ZONE }}
 
+      - name: Check if TPU node pool exists
+        id: tpu-pool-check
+        run: |
+          if gcloud container node-pools describe "${TPU_POOL_NAME}" \
+            --project="${PROJECT_ID}" \
+            --cluster="${CLUSTER_NAME}" \
+            --zone="${ZONE}" >/dev/null 2>&1; then
+
+            echo "TPU node pool ${TPU_POOL_NAME} already exists."
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "TPU node pool ${TPU_POOL_NAME} does not exist."
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Create Spot TPU node pool
+        if: steps.tpu-pool-check.outputs.exists == 'false'
+        run: |
+          echo "Creating Spot TPU node pool ${TPU_POOL_NAME}..."
+
+          gcloud container node-pools create "${TPU_POOL_NAME}" \
+            --project="${PROJECT_ID}" \
+            --cluster="${CLUSTER_NAME}" \
+            --zone="${ZONE}" \
+            --machine-type="ct5lp-hightpu-1t" \
+            --num-nodes="1" \
+            --spot \
+            --enable-autoscaling \
+            --total-min-nodes="0" \
+            --total-max-nodes="1"
+
       - name: Verify GKE cluster
         run: |
           echo "===== GKE CLUSTER ====="
@@ -94,10 +126,22 @@ jobs:
 
           kubectl get nodes -o wide
 
+      - name: Verify TPU node pool
+        run: |
+          echo "===== GKE NODE POOLS ====="
+
+          gcloud container node-pools list \
+            --project="${PROJECT_ID}" \
+            --cluster="${CLUSTER_NAME}" \
+            --zone="${ZONE}"
+
+          echo "Note: the TPU node may not appear in kubectl yet because the minimum node count is 0."
+          echo "It should scale from 0 to 1 after a workload requests google.com/tpu."
+
       - name: Add workflow summary
         run: |
           {
-            echo "# GKE Cluster Creation"
+            echo "# GKE and TPU Infrastructure"
             echo
             echo "✅ Authentication completed"
             echo
@@ -105,7 +149,13 @@ jobs:
             echo
             echo "✅ Kubernetes connection verified"
             echo
+            echo "✅ TPU node pool created or already available"
+            echo
             echo "- Project: ${PROJECT_ID}"
             echo "- Cluster: ${CLUSTER_NAME}"
             echo "- Zone: ${ZONE}"
+            echo "- TPU pool: ${TPU_POOL_NAME}"
+            echo "- TPU machine: ct5lp-hightpu-1t"
+            echo "- Spot: enabled"
+            echo "- Autoscaling: 0 to 1"
           } >> "${GITHUB_STEP_SUMMARY}"
