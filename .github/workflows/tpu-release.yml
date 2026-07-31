@@ -32,11 +32,13 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Install GKE authentication plugin
+      - name: Verify Google Cloud authentication
         run: |
-          sudo apt-get update
-          sudo apt-get install -y google-cloud-sdk-gke-gcloud-auth-plugin
-          gke-gcloud-auth-plugin --version
+          echo "Active account:"
+          gcloud auth list
+
+          echo "Active project:"
+          gcloud config get-value project
 
       - name: Enable required APIs
         run: |
@@ -63,6 +65,8 @@ jobs:
       - name: Create GKE cluster
         if: steps.cluster-check.outputs.exists == 'false'
         run: |
+          echo "Creating GKE cluster ${CLUSTER_NAME}..."
+
           gcloud container clusters create "${CLUSTER_NAME}" \
             --project="${PROJECT_ID}" \
             --zone="${ZONE}" \
@@ -71,12 +75,13 @@ jobs:
             --addons="GcpFilestoreCsiDriver"
 
       - name: Get GKE credentials
-        run: |
-          gcloud container clusters get-credentials "${CLUSTER_NAME}" \
-            --project="${PROJECT_ID}" \
-            --zone="${ZONE}"
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          location: ${{ env.ZONE }}
 
-      - name: Verify cluster
+      - name: Verify GKE cluster
         run: |
           echo "===== GKE CLUSTER ====="
 
@@ -96,7 +101,9 @@ jobs:
             echo
             echo "✅ Authentication completed"
             echo
-            echo "✅ Cluster created or already available"
+            echo "✅ GKE cluster created or already available"
+            echo
+            echo "✅ Kubernetes connection verified"
             echo
             echo "- Project: ${PROJECT_ID}"
             echo "- Cluster: ${CLUSTER_NAME}"
