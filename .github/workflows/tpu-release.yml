@@ -1,4 +1,4 @@
-name: Create GKE Cluster and TPU Pool
+name: Create GKE Cluster, TPU Pool and Deploy Model
 
 on:
   workflow_dispatch:
@@ -135,13 +135,72 @@ jobs:
             --cluster="${CLUSTER_NAME}" \
             --zone="${ZONE}"
 
-          echo "Note: the TPU node may not appear in kubectl yet because the minimum node count is 0."
-          echo "It should scale from 0 to 1 after a workload requests google.com/tpu."
+          echo "TPU node may currently be at 0 nodes."
+          echo "The model workload should trigger autoscaling from 0 to 1."
+
+      - name: Validate TPU model file
+        run: |
+          echo "Checking TPU model YAML..."
+
+          if [ ! -f "tpu_model.yml" ]; then
+            echo "ERROR: tpu_model.yml not found in repository root."
+            exit 1
+          fi
+
+          echo "tpu_model.yml found."
+
+      - name: Deploy TPU model
+        run: |
+          echo "Deploying TPU model..."
+
+          kubectl apply -f tpu_model.yml
+
+      - name: Show deployment status
+        run: |
+          echo "===== DEPLOYMENTS ====="
+          kubectl get deployments
+
+          echo "===== PODS ====="
+          kubectl get pods -o wide
+
+          echo "===== SERVICES ====="
+          kubectl get services
+
+      - name: Wait for TPU model deployment
+        run: |
+          echo "Waiting for tiny-model-server deployment..."
+
+          kubectl rollout status deployment/tiny-model-server \
+            --timeout=30m
+
+      - name: Verify TPU model
+        run: |
+          echo "===== FINAL DEPLOYMENT STATUS ====="
+          kubectl get deployments
+
+          echo "===== FINAL POD STATUS ====="
+          kubectl get pods -o wide
+
+          echo "===== SERVICES ====="
+          kubectl get services
+
+          echo "===== TPU NODES ====="
+          kubectl get nodes \
+            -l cloud.google.com/gke-tpu-accelerator=tpu-v5-lite-podslice \
+            -o wide || true
+
+      - name: Show TPU model logs
+        run: |
+          echo "===== MODEL LOGS ====="
+
+          kubectl logs deployment/tiny-model-server \
+            --tail=100
 
       - name: Add workflow summary
+        if: always()
         run: |
           {
-            echo "# GKE and TPU Infrastructure"
+            echo "# GKE, TPU and Model Deployment"
             echo
             echo "✅ Authentication completed"
             echo
@@ -151,6 +210,8 @@ jobs:
             echo
             echo "✅ TPU node pool created or already available"
             echo
+            echo "✅ TPU model deployment attempted"
+            echo
             echo "- Project: ${PROJECT_ID}"
             echo "- Cluster: ${CLUSTER_NAME}"
             echo "- Zone: ${ZONE}"
@@ -158,4 +219,5 @@ jobs:
             echo "- TPU machine: ct5lp-hightpu-1t"
             echo "- Spot: enabled"
             echo "- Autoscaling: 0 to 1"
+            echo "- Model file: tpu_model.yml"
           } >> "${GITHUB_STEP_SUMMARY}"
