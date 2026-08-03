@@ -1,4 +1,4 @@
-name: Create GKE Cluster, TPU Pool and Deploy Model
+name: Create GKE Cluster, TPU Pool, Deploy Model and Run Trace
 
 on:
   workflow_dispatch:
@@ -16,6 +16,7 @@ env:
 jobs:
   create-gke-and-tpu:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
@@ -135,19 +136,25 @@ jobs:
             --cluster="${CLUSTER_NAME}" \
             --zone="${ZONE}"
 
-          echo "TPU node may currently be at 0 nodes."
-          echo "The model workload should trigger autoscaling from 0 to 1."
+          echo "The TPU pool may currently have 0 running nodes."
+          echo "Deploying the model should trigger autoscaling from 0 to 1."
 
-      - name: Validate TPU model file
+      - name: Validate model and trace files
         run: |
-          echo "Checking TPU model YAML..."
+          echo "Checking repository files..."
 
           if [ ! -f "K8/tpu_model.yml" ]; then
-            echo "ERROR: K8/tpu_model.yml not found in repository root."
+            echo "ERROR: K8/tpu_model.yml was not found."
+            exit 1
+          fi
+
+          if [ ! -f "Trace/tpu_trace.py" ]; then
+            echo "ERROR: Trace/tpu_trace.py was not found."
             exit 1
           fi
 
           echo "K8/tpu_model.yml found."
+          echo "Trace/tpu_trace.py found."
 
       - name: Deploy TPU model
         run: |
@@ -155,7 +162,7 @@ jobs:
 
           kubectl apply -f K8/tpu_model.yml
 
-      - name: Show deployment status
+      - name: Show initial deployment status
         run: |
           echo "===== DEPLOYMENTS ====="
           kubectl get deployments
@@ -187,7 +194,7 @@ jobs:
           echo "===== TPU NODES ====="
           kubectl get nodes \
             -l cloud.google.com/gke-tpu-accelerator=tpu-v5-lite-podslice \
-            -o wide || true
+            -o wide
 
       - name: Show TPU model logs
         run: |
@@ -196,21 +203,133 @@ jobs:
           kubectl logs deployment/tiny-model-server \
             --tail=100
 
+      # ---------------------------------------------------------
+      # TPU TRACE EXECUTION
+      # ---------------------------------------------------------
+
+      - name: Create trace results directory
+        run: |
+          mkdir -p Trace/results
+
+      - name: Run TPU workload trace
+        run: |
+          set -e
+
+          echo "Starting port-forward to tiny-model-service..."
+
+          kubectl port-forward \
+            service/tiny-model-service \
+            8000:8000 \
+            > Trace/results/port-forward.log 2>&1 &
+
+          PORT_FORWARD_PID=$!
+
+          cleanup() {
+            echo "Stopping port-forward..."
+            kill "${PORT_FORWARD_PID}" 2>/dev/null || true
+          }
+
+          trap cleanup EXIT
+
+          echo "Waiting for model endpoint..."
+
+          ENDPOINT_READY=false
+
+          for attempt in {1..30}; do
+            if curl --silent --fail \
+              http://localhost:8000/v1/models \
+              > Trace/results/models-response.json; then
+
+              echo "Model endpoint is ready."
+              ENDPOINT_READY=true
+              break
+            fi
+
+            echo "Attempt ${attempt}/30: endpoint is not ready."
+            sleep 10
+          done
+
+          if [ "${ENDPOINT_READY}" != "true" ]; then
+            echo "ERROR: Model endpoint did not become available."
+            cat Trace/results/port-forward.log
+            exit 1
+          fi
+
+          echo "Running TPU workload trace..."
+
+          python3 Trace/tpu_trace.py \
+            --infra tpu \
+            --url http://localhost:8000/v1/chat/completions \
+            | tee Trace/results/tpu-trace-console.txt
+
+          echo "TPU workload trace completed."
+
+      - name: Collect TPU trace result files
+        if: always()
+        run: |
+          echo "Collecting generated result files..."
+
+          mv results_tpu_*.json Trace/results/ 2>/dev/null || true
+          mv results_tpu_*.txt Trace/results/ 2>/dev/null || true
+
+          echo "===== TRACE RESULT FILES ====="
+
+          find Trace/results \
+            -maxdepth 1 \
+            -type f \
+            -print
+
+      - name: Upload TPU trace results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tpu-trace-${{ github.run_number }}
+          path: Trace/results/
+          retention-days: 7
+          if-no-files-found: warn
+
+      # ---------------------------------------------------------
+      # DIAGNOSTICS AND SUMMARY
+      # ---------------------------------------------------------
+
+      - name: Collect Kubernetes diagnostics
+        if: failure()
+        run: |
+          mkdir -p diagnostics
+
+          kubectl get nodes -o wide \
+            > diagnostics/nodes.txt 2>&1 || true
+
+          kubectl get pods -A -o wide \
+            > diagnostics/pods.txt 2>&1 || true
+
+          kubectl get services -A \
+            > diagnostics/services.txt 2>&1 || true
+
+          kubectl get events -A \
+            --sort-by=.metadata.creationTimestamp \
+            > diagnostics/events.txt 2>&1 || true
+
+          kubectl logs deployment/tiny-model-server \
+            --tail=500 \
+            > diagnostics/model-logs.txt 2>&1 || true
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tpu-diagnostics-${{ github.run_number }}
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Add workflow summary
         if: always()
         run: |
           {
-            echo "# GKE, TPU and Model Deployment"
+            echo "# GKE TPU POC Release"
             echo
-            echo "✅ Authentication completed"
-            echo
-            echo "✅ GKE cluster created or already available"
-            echo
-            echo "✅ Kubernetes connection verified"
-            echo
-            echo "✅ TPU node pool created or already available"
-            echo
-            echo "✅ TPU model deployment attempted"
+            echo "## Infrastructure"
             echo
             echo "- Project: ${PROJECT_ID}"
             echo "- Cluster: ${CLUSTER_NAME}"
@@ -219,5 +338,17 @@ jobs:
             echo "- TPU machine: ct5lp-hightpu-1t"
             echo "- Spot: enabled"
             echo "- Autoscaling: 0 to 1"
-            echo "- Model file: tpu_model.yml"
+            echo
+            echo "## Deployment"
+            echo
+            echo "- Model file: K8/tpu_model.yml"
+            echo "- Deployment: tiny-model-server"
+            echo "- Service: tiny-model-service"
+            echo
+            echo "## Workload Trace"
+            echo
+            echo "- Trace file: Trace/tpu_trace.py"
+            echo "- Infrastructure type: TPU"
+            echo "- Model: Qwen/Qwen2.5-0.5B-Instruct"
+            echo "- Artifact: tpu-trace-${GITHUB_RUN_NUMBER}"
           } >> "${GITHUB_STEP_SUMMARY}"
