@@ -142,18 +142,18 @@ jobs:
         run: |
           echo "Checking TPU model YAML..."
 
-          if [ ! -f "tpu_model.yml" ]; then
-            echo "ERROR: tpu_model.yml not found in repository root."
+          if [ ! -f "K8/tpu_model.yml" ]; then
+            echo "ERROR: K8/tpu_model.yml not found in repository root."
             exit 1
           fi
 
-          echo "tpu_model.yml found."
+          echo "K8/tpu_model.yml found."
 
       - name: Deploy TPU model
         run: |
           echo "Deploying TPU model..."
 
-          kubectl apply -f tpu_model.yml
+          kubectl apply -f K8/tpu_model.yml
 
       - name: Show deployment status
         run: |
