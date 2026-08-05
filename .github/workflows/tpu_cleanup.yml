@@ -1,0 +1,162 @@
+name: Stop TPU Model and Scale Down
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+  ZONE: ${{ vars.GKE_ZONE }}
+  TPU_POOL_NAME: ${{ vars.TPU_POOL_NAME }}
+
+jobs:
+  cleanup-tpu:
+    runs-on: ubuntu-latest
+
+    steps:
+      # -------------------------------------------------------
+      # 1. Authenticate GitHub -> Google Cloud
+      # -------------------------------------------------------
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      # -------------------------------------------------------
+      # 2. Install/configure gcloud
+      # -------------------------------------------------------
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      # -------------------------------------------------------
+      # 3. Connect kubectl to the CORRECT GKE cluster
+      # -------------------------------------------------------
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          location: ${{ env.ZONE }}
+
+      # -------------------------------------------------------
+      # 4. Show current state before cleanup
+      # -------------------------------------------------------
+      - name: Show current TPU workload
+        run: |
+          echo "===== CURRENT CONTEXT ====="
+          kubectl config current-context
+
+          echo "===== PODS ====="
+          kubectl get pods -o wide || true
+
+          echo "===== DEPLOYMENTS ====="
+          kubectl get deployments || true
+
+          echo "===== NODES ====="
+          kubectl get nodes \
+            -L cloud.google.com/gke-tpu-accelerator
+
+      # -------------------------------------------------------
+      # 5. Delete model workload
+      # -------------------------------------------------------
+      - name: Delete TPU model
+        run: |
+          echo "Deleting tiny-model-server deployment..."
+
+          kubectl delete deployment tiny-model-server \
+            --ignore-not-found=true
+
+          echo "Deleting tiny-model-service..."
+
+          kubectl delete service tiny-model-service \
+            --ignore-not-found=true
+
+      # -------------------------------------------------------
+      # 6. Verify model is gone
+      # -------------------------------------------------------
+      - name: Verify model deletion
+        run: |
+          echo "===== PODS AFTER DELETE ====="
+          kubectl get pods -o wide || true
+
+          echo "===== DEPLOYMENTS AFTER DELETE ====="
+          kubectl get deployments || true
+
+          echo "===== SERVICES AFTER DELETE ====="
+          kubectl get services || true
+
+      # -------------------------------------------------------
+      # 7. Wait for TPU autoscaler to scale down naturally
+      # -------------------------------------------------------
+      - name: Wait for TPU scale down
+        run: |
+          echo "Waiting for TPU node to scale down to 0..."
+
+          for i in {1..30}; do
+
+            TPU_NODES=$(kubectl get nodes \
+              -l cloud.google.com/gke-tpu-accelerator=tpu-v5-lite-podslice \
+              --no-headers 2>/dev/null | wc -l)
+
+            echo "Check $i/30 - TPU nodes currently running: ${TPU_NODES}"
+
+            if [ "${TPU_NODES}" -eq 0 ]; then
+              echo "TPU successfully scaled down to 0."
+              exit 0
+            fi
+
+            sleep 30
+          done
+
+          echo "TPU did not scale down within 15 minutes."
+          echo "The workload is deleted, but autoscaler scale-down may take longer."
+          exit 0
+
+      # -------------------------------------------------------
+      # 8. Final verification
+      # -------------------------------------------------------
+      - name: Final verification
+        run: |
+          echo "===== FINAL POD STATUS ====="
+          kubectl get pods -o wide || true
+
+          echo "===== FINAL NODE STATUS ====="
+          kubectl get nodes \
+            -L cloud.google.com/gke-tpu-accelerator
+
+          echo "===== TPU NODE POOL ====="
+
+          gcloud container node-pools describe "${TPU_POOL_NAME}" \
+            --cluster="${CLUSTER_NAME}" \
+            --zone="${ZONE}" \
+            --project="${PROJECT_ID}" \
+            --format="table(name,status,autoscaling.enabled,autoscaling.totalMinNodeCount,autoscaling.totalMaxNodeCount)"
+
+      # -------------------------------------------------------
+      # 9. GitHub summary
+      # -------------------------------------------------------
+      - name: Add workflow summary
+        if: always()
+        run: |
+          {
+            echo "# TPU Cleanup"
+            echo
+            echo "Model Deployment: deleted"
+            echo "Model Service: deleted"
+            echo "TPU workload: stopped"
+            echo
+            echo "- Project: ${PROJECT_ID}"
+            echo "- Cluster: ${CLUSTER_NAME}"
+            echo "- TPU Pool: ${TPU_POOL_NAME}"
+            echo
+            echo "The TPU node pool configuration remains available."
+            echo "With no TPU workload, autoscaling should maintain 0 TPU nodes."
+          } >> "${GITHUB_STEP_SUMMARY}"
