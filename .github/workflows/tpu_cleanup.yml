@@ -1,7 +1,12 @@
 name: Stop TPU Model and Scale Down
 
 on:
+ # Allows you to run cleanup manually
   workflow_dispatch:
+
+  # Automatically runs every day at 12:00 AM PST
+  schedule:
+    - cron: "0 8 * * *"
 
 permissions:
   contents: read
