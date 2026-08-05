@@ -19,7 +19,13 @@ jobs:
 
     steps:
       # -------------------------------------------------------
-      # 1. Authenticate GitHub -> Google Cloud
+      # 1. Checkout repository
+      # -------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------
+      # 2. Authenticate GitHub -> Google Cloud
       # -------------------------------------------------------
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
@@ -29,7 +35,7 @@ jobs:
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       # -------------------------------------------------------
-      # 2. Install/configure gcloud
+      # 3. Install/configure gcloud
       # -------------------------------------------------------
       - name: Set up Google Cloud CLI
         uses: google-github-actions/setup-gcloud@v3
@@ -37,7 +43,7 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
 
       # -------------------------------------------------------
-      # 3. Connect kubectl to the CORRECT GKE cluster
+      # 4. Connect kubectl to the CORRECT GKE cluster
       # -------------------------------------------------------
       - name: Get GKE credentials
         uses: google-github-actions/get-gke-credentials@v3
@@ -47,7 +53,7 @@ jobs:
           location: ${{ env.ZONE }}
 
       # -------------------------------------------------------
-      # 4. Show current state before cleanup
+      # 5. Show current state before cleanup
       # -------------------------------------------------------
       - name: Show current TPU workload
         run: |
@@ -60,12 +66,15 @@ jobs:
           echo "===== DEPLOYMENTS ====="
           kubectl get deployments || true
 
+          echo "===== SERVICES ====="
+          kubectl get services || true
+
           echo "===== NODES ====="
           kubectl get nodes \
             -L cloud.google.com/gke-tpu-accelerator
 
       # -------------------------------------------------------
-      # 5. Delete model workload
+      # 6. Delete model workload
       # -------------------------------------------------------
       - name: Delete TPU model
         run: |
@@ -80,7 +89,7 @@ jobs:
             --ignore-not-found=true
 
       # -------------------------------------------------------
-      # 6. Verify model is gone
+      # 7. Verify model is gone
       # -------------------------------------------------------
       - name: Verify model deletion
         run: |
@@ -94,7 +103,7 @@ jobs:
           kubectl get services || true
 
       # -------------------------------------------------------
-      # 7. Wait for TPU autoscaler to scale down naturally
+      # 8. Wait for TPU autoscaler to scale down naturally
       # -------------------------------------------------------
       - name: Wait for TPU scale down
         run: |
@@ -121,7 +130,7 @@ jobs:
           exit 0
 
       # -------------------------------------------------------
-      # 8. Final verification
+      # 9. Final verification
       # -------------------------------------------------------
       - name: Final verification
         run: |
@@ -141,7 +150,7 @@ jobs:
             --format="table(name,status,autoscaling.enabled,autoscaling.totalMinNodeCount,autoscaling.totalMaxNodeCount)"
 
       # -------------------------------------------------------
-      # 9. GitHub summary
+      # 10. GitHub summary
       # -------------------------------------------------------
       - name: Add workflow summary
         if: always()
@@ -149,9 +158,9 @@ jobs:
           {
             echo "# TPU Cleanup"
             echo
-            echo "Model Deployment: deleted"
-            echo "Model Service: deleted"
-            echo "TPU workload: stopped"
+            echo "✅ Model Deployment deleted or already absent"
+            echo "✅ Model Service deleted or already absent"
+            echo "✅ TPU workload stopped"
             echo
             echo "- Project: ${PROJECT_ID}"
             echo "- Cluster: ${CLUSTER_NAME}"
