@@ -91,7 +91,7 @@ for i, prompt in enumerate(raw_prompts):
    payload_dict = {
        'model': model_name,
        'messages': [{'role': 'user', 'content': prompt}],
-       'max_tokens': 64,
+       'max_tokens': 256,
        'temperature': temperature,
        'top_p': top_p,
        'top_k': top_k,
