@@ -145,3 +145,55 @@ jobs:
 
           echo "===== NODES ====="
           kubectl get nodes -o wide
+
+      - name: Wait for GPU Node Scale Up
+        run: |
+          echo "Waiting for GPU node pool to scale from 0 to 1..."
+
+          for i in {1..30}; do
+            GPU_NODES=$(kubectl get nodes \
+              -l cloud.google.com/gke-accelerator=nvidia-tesla-t4 \
+              --no-headers 2>/dev/null | wc -l)
+
+            echo "Attempt $i: GPU nodes found = $GPU_NODES"
+
+            if [ "$GPU_NODES" -ge 1 ]; then
+              echo "GPU node successfully scaled from 0 to 1."
+
+              kubectl get nodes \
+                -l cloud.google.com/gke-accelerator=nvidia-tesla-t4 \
+                -o wide
+
+              exit 0
+            fi
+
+            sleep 20
+          done
+
+          echo "ERROR: GPU node did not scale up."
+          kubectl get pods -o wide
+          kubectl get events --sort-by=.metadata.creationTimestamp
+          exit 1
+
+      - name: Wait for GPU Model Deployment
+        run: |
+          echo "Waiting for GPU model deployment..."
+
+          kubectl rollout status deployment/tiny-model-gpu-server \
+            --timeout=30m
+
+      - name: Verify GPU Model
+        run: |
+          echo "===== FINAL DEPLOYMENT STATUS ====="
+          kubectl get deployments
+
+          echo "===== FINAL POD STATUS ====="
+          kubectl get pods -o wide
+
+          echo "===== GPU NODE ====="
+          kubectl get nodes \
+            -l cloud.google.com/gke-accelerator=nvidia-tesla-t4 \
+            -o wide
+
+          echo "===== SERVICES ====="
+          kubectl get services
