@@ -29,3 +29,47 @@ jobs:
 
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v3
+
+              # Verify authentication and project
+      - name: Verify GCP Access
+        run: |
+          gcloud config set project $PROJECT_ID
+          gcloud auth list
+          gcloud config get-value project
+
+      # Check whether GPU cluster already exists
+      - name: Check GPU Cluster
+        id: check-cluster
+        run: |
+          if gcloud container clusters describe $CLUSTER_NAME \
+            --zone=$ZONE \
+            --project=$PROJECT_ID >/dev/null 2>&1; then
+              echo "Cluster $CLUSTER_NAME already exists"
+              echo "exists=true" >> $GITHUB_OUTPUT
+          else
+              echo "Cluster $CLUSTER_NAME does not exist"
+              echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Create GPU GKE cluster only if it does not exist
+      - name: Create GPU GKE Cluster
+        if: steps.check-cluster.outputs.exists == 'false'
+        run: |
+          gcloud container clusters create $CLUSTER_NAME \
+            --zone=$ZONE \
+            --project=$PROJECT_ID \
+            --machine-type=e2-standard-4 \
+            --num-nodes=1
+
+      # Connect kubectl to the new cluster
+      - name: Get GKE Credentials
+        run: |
+          gcloud container clusters get-credentials $CLUSTER_NAME \
+            --zone=$ZONE \
+            --project=$PROJECT_ID
+
+      # Verify cluster
+      - name: Verify GKE Cluster
+        run: |
+          kubectl get nodes
+          kubectl cluster-info
