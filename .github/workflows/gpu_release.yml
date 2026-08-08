@@ -116,3 +116,45 @@ jobs:
 
           echo "Current Kubernetes nodes:"
           kubectl get nodes
+
+              - name: Verify GPU Node Pool
+                run: |
+          gcloud container node-pools describe $GPU_POOL_NAME \
+            --cluster=$CLUSTER_NAME \
+            --zone=$ZONE \
+            --project=$PROJECT_ID \
+            --format="yaml(name,status,autoscaling,config.machineType,config.accelerators)"
+
+          echo "Current Kubernetes nodes:"
+          kubectl get nodes
+
+      - name: Validate GPU Model File
+        run: |
+          echo "Checking GPU model file..."
+
+          if [ ! -f "K8/gpu_model.yml" ]; then
+            echo "ERROR: K8/gpu_model.yml was not found."
+            exit 1
+          fi
+
+          echo "K8/gpu_model.yml found."
+
+      - name: Deploy GPU Model
+        run: |
+          echo "Deploying GPU model..."
+          kubectl apply -f K8/gpu_model.yml
+
+      - name: Show Initial GPU Deployment Status
+        run: |
+          echo "===== DEPLOYMENTS ====="
+          kubectl get deployments
+
+          echo "===== PODS ====="
+          kubectl get pods -o wide
+
+          echo "===== SERVICES ====="
+          kubectl get services
+
+          echo "===== NODES ====="
+          kubectl get nodes -o wide
+      
