@@ -75,7 +75,6 @@ jobs:
           kubectl get nodes
           kubectl cluster-info
 
-              # Check whether GPU node pool already exists
       - name: Check GPU Node Pool
         id: check-gpu-pool
         run: |
@@ -90,7 +89,6 @@ jobs:
               echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      # Create T4 GPU node pool with autoscaling 0 -> 1
       - name: Create GPU Node Pool
         if: steps.check-gpu-pool.outputs.exists == 'false'
         run: |
@@ -105,28 +103,18 @@ jobs:
             --min-nodes=0 \
             --max-nodes=1
 
-      # Verify GPU node pool configuration
       - name: Verify GPU Node Pool
         run: |
+          echo "===== GPU NODE POOL ====="
+
           gcloud container node-pools describe $GPU_POOL_NAME \
             --cluster=$CLUSTER_NAME \
             --zone=$ZONE \
             --project=$PROJECT_ID \
             --format="yaml(name,status,autoscaling,config.machineType,config.accelerators)"
 
-          echo "Current Kubernetes nodes:"
-          kubectl get nodes
-
-              - name: Verify GPU Node Pool
-                run: |
-          gcloud container node-pools describe $GPU_POOL_NAME \
-            --cluster=$CLUSTER_NAME \
-            --zone=$ZONE \
-            --project=$PROJECT_ID \
-            --format="yaml(name,status,autoscaling,config.machineType,config.accelerators)"
-
-          echo "Current Kubernetes nodes:"
-          kubectl get nodes
+          echo "===== CURRENT KUBERNETES NODES ====="
+          kubectl get nodes -o wide
 
       - name: Validate GPU Model File
         run: |
@@ -157,4 +145,3 @@ jobs:
 
           echo "===== NODES ====="
           kubectl get nodes -o wide
-      
