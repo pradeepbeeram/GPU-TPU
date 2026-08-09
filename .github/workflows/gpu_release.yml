@@ -12,6 +12,7 @@ env:
 jobs:
   gpu-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     permissions:
       contents: read
@@ -203,3 +204,132 @@ jobs:
 
           echo "===== SERVICES ====="
           kubectl get services
+
+      # ---------------------------------------------------------
+      # GPU TRACE
+      # ---------------------------------------------------------
+
+      - name: Validate Trace File
+        run: |
+          if [ ! -f "Trace/tpu_trace.py" ]; then
+            echo "ERROR: Trace/tpu_trace.py was not found."
+            exit 1
+          fi
+
+          echo "Trace/tpu_trace.py found."
+
+      - name: Create GPU Trace Results Directory
+        run: |
+          mkdir -p Trace/results
+
+      - name: Run GPU Workload Trace
+        run: |
+          set -e
+
+          echo "Starting port-forward to tiny-model-gpu-service..."
+
+          kubectl port-forward \
+            service/tiny-model-gpu-service \
+            8000:8000 \
+            > Trace/results/gpu-port-forward.log 2>&1 &
+
+          PORT_FORWARD_PID=$!
+
+          cleanup() {
+            echo "Stopping port-forward..."
+            kill "${PORT_FORWARD_PID}" 2>/dev/null || true
+          }
+
+          trap cleanup EXIT
+
+          echo "Waiting for GPU model endpoint..."
+
+          ENDPOINT_READY=false
+
+          for attempt in {1..30}; do
+            if curl --silent --fail \
+              http://localhost:8000/v1/models \
+              > Trace/results/gpu-models-response.json; then
+
+              echo "GPU model endpoint is ready."
+              ENDPOINT_READY=true
+              break
+            fi
+
+            echo "Attempt ${attempt}/30: endpoint is not ready."
+            sleep 10
+          done
+
+          if [ "${ENDPOINT_READY}" != "true" ]; then
+            echo "ERROR: GPU model endpoint did not become available."
+            cat Trace/results/gpu-port-forward.log
+            exit 1
+          fi
+
+          echo "Running 100-trace workload on L4 GPU..."
+
+          python3 Trace/tpu_trace.py \
+            --infra gpu \
+            --url http://localhost:8000/v1/chat/completions \
+            | tee Trace/results/gpu-trace-console.txt
+
+          echo "GPU workload trace completed."
+
+      - name: Collect GPU Trace Results
+        if: always()
+        run: |
+          echo "Collecting generated GPU result files..."
+
+          mv results_gpu_*.json Trace/results/ 2>/dev/null || true
+          mv results_gpu_*.txt Trace/results/ 2>/dev/null || true
+
+          echo "===== GPU TRACE RESULT FILES ====="
+
+          find Trace/results \
+            -maxdepth 1 \
+            -type f \
+            -print
+
+      - name: Upload GPU Trace Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-trace-${{ github.run_number }}
+          path: Trace/results/
+          retention-days: 7
+          if-no-files-found: warn
+
+      # ---------------------------------------------------------
+      # FAILURE DIAGNOSTICS
+      # ---------------------------------------------------------
+
+      - name: Collect Kubernetes Diagnostics
+        if: failure()
+        run: |
+          mkdir -p diagnostics
+
+          kubectl get nodes -o wide \
+            > diagnostics/nodes.txt 2>&1 || true
+
+          kubectl get pods -A -o wide \
+            > diagnostics/pods.txt 2>&1 || true
+
+          kubectl get services -A \
+            > diagnostics/services.txt 2>&1 || true
+
+          kubectl get events -A \
+            --sort-by=.metadata.creationTimestamp \
+            > diagnostics/events.txt 2>&1 || true
+
+          kubectl logs deployment/tiny-model-gpu-server \
+            --tail=500 \
+            > diagnostics/model-logs.txt 2>&1 || true
+
+      - name: Upload Diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-diagnostics-${{ github.run_number }}
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: ignore
