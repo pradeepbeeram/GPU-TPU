@@ -96,8 +96,8 @@ jobs:
             --cluster=$CLUSTER_NAME \
             --zone=$ZONE \
             --project=$PROJECT_ID \
-            --machine-type=n1-standard-4 \
-            --accelerator=type=nvidia-tesla-t4,count=1,gpu-driver-version=default \
+            --machine-type=g2-standard-4 \
+            --accelerator=type=nvidia-l4,count=1,gpu-driver-version=default \
             --enable-autoscaling \
             --num-nodes=0 \
             --min-nodes=0 \
@@ -148,20 +148,20 @@ jobs:
 
       - name: Wait for GPU Node Scale Up
         run: |
-          echo "Waiting for GPU node pool to scale from 0 to 1..."
+          echo "Waiting for L4 GPU node pool to scale from 0 to 1..."
 
           for i in {1..30}; do
             GPU_NODES=$(kubectl get nodes \
-              -l cloud.google.com/gke-accelerator=nvidia-tesla-t4 \
+              -l cloud.google.com/gke-accelerator=nvidia-l4 \
               --no-headers 2>/dev/null | wc -l)
 
-            echo "Attempt $i: GPU nodes found = $GPU_NODES"
+            echo "Attempt $i: L4 GPU nodes found = $GPU_NODES"
 
             if [ "$GPU_NODES" -ge 1 ]; then
-              echo "GPU node successfully scaled from 0 to 1."
+              echo "L4 GPU node successfully scaled from 0 to 1."
 
               kubectl get nodes \
-                -l cloud.google.com/gke-accelerator=nvidia-tesla-t4 \
+                -l cloud.google.com/gke-accelerator=nvidia-l4 \
                 -o wide
 
               exit 0
@@ -170,9 +170,15 @@ jobs:
             sleep 20
           done
 
-          echo "ERROR: GPU node did not scale up."
+          echo "ERROR: L4 GPU node did not scale up."
+
+          echo "===== PODS ====="
           kubectl get pods -o wide
-          kubectl get events --sort-by=.metadata.creationTimestamp
+
+          echo "===== EVENTS ====="
+          kubectl get events \
+            --sort-by=.metadata.creationTimestamp
+
           exit 1
 
       - name: Wait for GPU Model Deployment
@@ -190,9 +196,9 @@ jobs:
           echo "===== FINAL POD STATUS ====="
           kubectl get pods -o wide
 
-          echo "===== GPU NODE ====="
+          echo "===== L4 GPU NODE ====="
           kubectl get nodes \
-            -l cloud.google.com/gke-accelerator=nvidia-tesla-t4 \
+            -l cloud.google.com/gke-accelerator=nvidia-l4 \
             -o wide
 
           echo "===== SERVICES ====="
