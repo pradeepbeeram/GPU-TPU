@@ -19,7 +19,7 @@ def detect_infrastructure():
 # Hardware Peak FP16/BF16 TFLOPS defaults
 PEAK_TFLOPS_DEFAULTS = {
    "tpu": 197.0,  # GCP TPU v5e (ct5lp-hightpu-1t)
-   "gpu": 70.0    # GCP G2/N1 (NVIDIA T4 Tensor Core)
+   "gpu": 121.0    # GCP NVIDIA L4 FP16/BF16 Tensor Core, dense
 }
 
 
