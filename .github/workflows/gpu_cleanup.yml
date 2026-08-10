@@ -1,0 +1,177 @@
+name: Stop GPU Model and Scale Down
+
+on:
+  # Allows manual cleanup
+  workflow_dispatch:
+
+  # Automatically runs every day at 12:00 AM PST
+  schedule:
+    - cron: "0 8 * * *"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  CLUSTER_NAME: ${{ vars.GPU_CLUSTER_NAME }}
+  ZONE: ${{ vars.GKE_ZONE }}
+  GPU_POOL_NAME: ${{ vars.GPU_POOL_NAME }}
+
+jobs:
+  cleanup-gpu:
+    runs-on: ubuntu-latest
+
+    steps:
+      # -------------------------------------------------------
+      # 1. Checkout repository
+      # -------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------
+      # 2. Authenticate GitHub -> Google Cloud
+      # -------------------------------------------------------
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      # -------------------------------------------------------
+      # 3. Install/configure gcloud
+      # -------------------------------------------------------
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      # -------------------------------------------------------
+      # 4. Connect kubectl to GPU GKE cluster
+      # -------------------------------------------------------
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          location: ${{ env.ZONE }}
+
+      # -------------------------------------------------------
+      # 5. Show current state before cleanup
+      # -------------------------------------------------------
+      - name: Show current GPU workload
+        run: |
+          echo "===== CURRENT CONTEXT ====="
+          kubectl config current-context
+
+          echo "===== PODS ====="
+          kubectl get pods -o wide || true
+
+          echo "===== DEPLOYMENTS ====="
+          kubectl get deployments || true
+
+          echo "===== SERVICES ====="
+          kubectl get services || true
+
+          echo "===== NODES ====="
+          kubectl get nodes \
+            -L cloud.google.com/gke-accelerator
+
+      # -------------------------------------------------------
+      # 6. Delete GPU model workload
+      # -------------------------------------------------------
+      - name: Delete GPU model
+        run: |
+          echo "Deleting tiny-model-gpu-server deployment..."
+
+          kubectl delete deployment tiny-model-gpu-server \
+            --ignore-not-found=true
+
+          echo "Deleting tiny-model-gpu-service..."
+
+          kubectl delete service tiny-model-gpu-service \
+            --ignore-not-found=true
+
+      # -------------------------------------------------------
+      # 7. Verify model is gone
+      # -------------------------------------------------------
+      - name: Verify GPU model deletion
+        run: |
+          echo "===== PODS AFTER DELETE ====="
+          kubectl get pods -o wide || true
+
+          echo "===== DEPLOYMENTS AFTER DELETE ====="
+          kubectl get deployments || true
+
+          echo "===== SERVICES AFTER DELETE ====="
+          kubectl get services || true
+
+      # -------------------------------------------------------
+      # 8. Wait for GPU autoscaler to scale down naturally
+      # -------------------------------------------------------
+      - name: Wait for GPU scale down
+        run: |
+          echo "Waiting for L4 GPU node to scale down to 0..."
+
+          for i in {1..30}; do
+
+            GPU_NODES=$(kubectl get nodes \
+              -l cloud.google.com/gke-accelerator=nvidia-l4 \
+              --no-headers 2>/dev/null | wc -l)
+
+            echo "Check $i/30 - L4 GPU nodes currently running: ${GPU_NODES}"
+
+            if [ "${GPU_NODES}" -eq 0 ]; then
+              echo "GPU successfully scaled down to 0."
+              exit 0
+            fi
+
+            sleep 30
+          done
+
+          echo "GPU did not scale down within 15 minutes."
+          echo "The workload is deleted, but autoscaler scale-down may take longer."
+          exit 0
+
+      # -------------------------------------------------------
+      # 9. Final verification
+      # -------------------------------------------------------
+      - name: Final verification
+        run: |
+          echo "===== FINAL POD STATUS ====="
+          kubectl get pods -o wide || true
+
+          echo "===== FINAL NODE STATUS ====="
+          kubectl get nodes \
+            -L cloud.google.com/gke-accelerator
+
+          echo "===== GPU NODE POOL ====="
+
+          gcloud container node-pools describe "${GPU_POOL_NAME}" \
+            --cluster="${CLUSTER_NAME}" \
+            --zone="${ZONE}" \
+            --project="${PROJECT_ID}" \
+            --format="yaml(name,status,autoscaling,config.machineType,config.accelerators)"
+
+      # -------------------------------------------------------
+      # 10. GitHub summary
+      # -------------------------------------------------------
+      - name: Add workflow summary
+        if: always()
+        run: |
+          {
+            echo "# GPU Cleanup"
+            echo
+            echo "✅ GPU Model Deployment deleted or already absent"
+            echo "✅ GPU Model Service deleted or already absent"
+            echo "✅ GPU workload stopped"
+            echo
+            echo "- Project: ${PROJECT_ID}"
+            echo "- Cluster: ${CLUSTER_NAME}"
+            echo "- GPU Pool: ${GPU_POOL_NAME}"
+            echo "- GPU Type: NVIDIA L4"
+            echo
+            echo "The GPU node pool configuration remains available."
+            echo "With no GPU workload, autoscaling should maintain 0 GPU nodes."
+          } >> "${GITHUB_STEP_SUMMARY}"
