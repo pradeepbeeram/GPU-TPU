@@ -1,4 +1,4 @@
-name: GPU POC Release
+name: Create GKE Cluster, GPU Pool, Deploy Model and Run Workload
 
 on:
   workflow_dispatch:
