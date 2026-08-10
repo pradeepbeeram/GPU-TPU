@@ -1,4 +1,4 @@
-name: Create GKE Cluster, TPU Pool, Deploy Model and Run Trace
+name: Create GKE Cluster, TPU Pool, Deploy Model and Run Workload
 
 on:
   workflow_dispatch:
